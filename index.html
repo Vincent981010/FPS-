@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FPS 監視器">
+<meta name="theme-color" content="#000000">
+<title>FPS 監視器</title>
+<style>
+  :root { --bg:#0b0d10; --fg:#e8edf2; --muted:#8a94a0; --card:#161a20; --accent:#4ade80; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",sans-serif;
+    overflow:hidden; overscroll-behavior:none; touch-action:manipulation; }
+  #stage { position:fixed; inset:0; }
+  #stage iframe, #stage canvas { width:100%; height:100%; border:0; display:block; background:#000; }
+
+  /* FPS 浮層 */
+  #hud { position:fixed; z-index:9999; pointer-events:none;
+    top:calc(env(safe-area-inset-top, 0px) + 6px);
+    right:calc(env(safe-area-inset-right, 0px) + 8px);
+    min-width:84px; padding:6px 9px 5px; border-radius:10px;
+    background:rgba(0,0,0,.55); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+    font-variant-numeric:tabular-nums; text-align:right; line-height:1.1; }
+  #fps { font-size:26px; font-weight:700; letter-spacing:-.5px; }
+  #fps small { font-size:11px; font-weight:500; color:var(--muted); margin-left:3px; }
+  #sub { font-size:10px; color:var(--muted); margin-top:2px; white-space:nowrap; }
+  #graph { display:block; width:100%; height:24px; margin-top:4px; }
+  .good { color:#4ade80; } .ok { color:#facc15; } .bad { color:#f87171; }
+
+  /* 選單 */
+  #gear { position:fixed; z-index:9998; left:calc(env(safe-area-inset-left,0px) + 8px);
+    top:calc(env(safe-area-inset-top,0px) + 6px); width:36px; height:36px; border-radius:50%;
+    border:0; background:rgba(0,0,0,.45); color:#fff; font-size:18px; opacity:.55; }
+  #menu { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.72);
+    display:flex; align-items:center; justify-content:center;
+    padding:calc(env(safe-area-inset-top,0px) + 16px) 16px calc(env(safe-area-inset-bottom,0px) + 16px); }
+  #menu.hidden { display:none; }
+  .panel { width:100%; max-width:420px; background:var(--card); border-radius:18px; padding:20px;
+    max-height:100%; overflow:auto; }
+  h1 { margin:0 0 4px; font-size:20px; }
+  p.desc { margin:0 0 14px; font-size:13px; color:var(--muted); line-height:1.5; }
+  input[type=url] { width:100%; padding:12px; border-radius:10px; border:1px solid #2a313a;
+    background:#0f1216; color:var(--fg); font-size:16px; }
+  .row { display:flex; gap:8px; margin-top:10px; }
+  button.btn { flex:1; padding:12px; border:0; border-radius:10px; font-size:15px; font-weight:600;
+    background:var(--accent); color:#04210f; }
+  button.btn.sec { background:#252c35; color:var(--fg); }
+  .opt { display:flex; justify-content:space-between; align-items:center; margin-top:14px; font-size:14px; }
+  .note { margin-top:14px; font-size:12px; color:var(--muted); line-height:1.6; border-top:1px solid #252c35; padding-top:12px; }
+  #err { color:#f87171; font-size:12px; margin-top:8px; display:none; }
+</style>
+</head>
+<body>
+
+<div id="stage"></div>
+<button id="gear" aria-label="選單">⚙︎</button>
+
+<div id="hud">
+  <div id="fps">--<small>FPS</small></div>
+  <div id="sub">平均 -- · 最低 --</div>
+  <canvas id="graph" width="168" height="48"></canvas>
+</div>
+
+<div id="menu">
+  <div class="panel">
+    <h1>FPS 監視器</h1>
+    <p class="desc">輸入網頁遊戲網址，載入後右上角會即時顯示幀數；或使用內建壓力測試。</p>
+    <input id="url" type="url" inputmode="url" placeholder="https://遊戲網址" autocapitalize="off" autocorrect="off">
+    <div id="err">此網站可能禁止被嵌入（X-Frame-Options），無法在此顯示。</div>
+    <div class="row">
+      <button class="btn" id="load">載入遊戲</button>
+      <button class="btn sec" id="demo">壓力測試</button>
+    </div>
+    <div class="opt"><span>顯示幀率圖表</span><input type="checkbox" id="optGraph" checked></div>
+    <div class="opt"><span>顯示 FPS 浮層</span><input type="checkbox" id="optHud" checked></div>
+    <div class="row"><button class="btn sec" id="close">關閉選單</button></div>
+    <div class="note">
+      ⚠️ 網頁只能測量「自身頁面」的幀數，無法讀取 App Store 原生遊戲的 FPS。
+      這裡量到的是瀏覽器 requestAnimationFrame 的更新率，適用於網頁遊戲。<br>
+      💡 Safari 分享 → 「加入主畫面」可全螢幕執行。
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const hud = $('hud'), fpsEl = $('fps'), subEl = $('sub'), graph = $('graph'), g = graph.getContext('2d');
+  const menu = $('menu'), stage = $('stage'), urlIn = $('url'), errEl = $('err');
+
+  // ---------- FPS 量測 ----------
+  const HIST = 84;                 // 圖表點數
+  const hist = [];                 // 每個點為一個 ~0.25s 區間的 FPS
+  let last = performance.now(), frames = 0, acc = 0;
+  let sumFps = 0, nFps = 0, recent = [];
+
+  function color(f) { return f >= 50 ? 'good' : f >= 30 ? 'ok' : 'bad'; }
+
+  function loop(now) {
+    frames++;
+    const dt = now - last;
+    if (dt >= 250) {
+      const fps = frames * 1000 / dt;
+      frames = 0; last = now;
+      hist.push(fps); if (hist.length > HIST) hist.shift();
+      recent.push(fps); if (recent.length > 20) recent.shift(); // 近 5 秒
+      sumFps += fps; nFps++;
+      const avg = sumFps / nFps, min = Math.min.apply(null, recent);
+      fpsEl.className = color(fps);
+      fpsEl.innerHTML = Math.round(fps) + '<small>FPS</small>';
+      subEl.textContent = '平均 ' + Math.round(avg) + ' · 最低 ' + Math.round(min);
+      drawGraph();
+    }
+    requestAnimationFrame(loop);
+  }
+
+  function drawGraph() {
+    if (graph.style.display === 'none') return;
+    const w = graph.width, h = graph.height, max = 125;
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(255,255,255,.15)'; g.lineWidth = 1;
+    [30, 60].forEach(v => { const y = h - v / max * h; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); });
+    g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
+    hist.forEach((v, i) => {
+      const x = i / (HIST - 1) * w, y = h - Math.min(v, max) / max * h;
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    const v = hist[hist.length - 1] || 0;
+    g.strokeStyle = v >= 50 ? '#4ade80' : v >= 30 ? '#facc15' : '#f87171';
+    g.stroke();
+  }
+  requestAnimationFrame(loop);
+
+  // ---------- 載入網頁遊戲 ----------
+  function clearStage() { stage.innerHTML = ''; stopDemo(); errEl.style.display = 'none'; }
+
+  function loadGame(u) {
+    clearStage();
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    try { localStorage.setItem('fps:url', u); } catch (e) {}
+    const f = document.createElement('iframe');
+    f.src = u;
+    f.allow = 'fullscreen; autoplay; gamepad; accelerometer; gyroscope; microphone';
+    f.setAttribute('allowfullscreen', '');
+    stage.appendChild(f);
+    menu.classList.add('hidden');
+  }
+
+  // ---------- 內建壓力測試 ----------
+  let demoRAF = 0, demoCanvas, balls = [];
+  function stopDemo() { cancelAnimationFrame(demoRAF); demoRAF = 0; balls = []; }
+  function startDemo() {
+    clearStage();
+    demoCanvas = document.createElement('canvas');
+    stage.appendChild(demoCanvas);
+    const ctx = demoCanvas.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    function resize() { demoCanvas.width = innerWidth * dpr; demoCanvas.height = innerHeight * dpr; }
+    resize(); addEventListener('resize', resize);
+    const add = (n, x, y) => {
+      for (let i = 0; i < n; i++) balls.push({
+        x: x ?? Math.random() * innerWidth, y: y ?? Math.random() * innerHeight,
+        vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6,
+        r: 5 + Math.random() * 10, c: 'hsl(' + (Math.random() * 360 | 0) + ',80%,60%)'
+      });
+    };
+    add(300);
+    demoCanvas.addEventListener('touchstart', e => {
+      const t = e.touches[0]; add(200, t.clientX, t.clientY);
+    }, { passive: true });
+    function draw() {
+      const W = innerWidth, H = innerHeight;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#0b0d10'; ctx.fillRect(0, 0, W, H);
+      for (const b of balls) {
+        b.x += b.vx; b.y += b.vy;
+        if (b.x < b.r || b.x > W - b.r) b.vx *= -1;
+        if (b.y < b.r || b.y > H - b.r) b.vy *= -1;
+        ctx.beginPath(); ctx.fillStyle = b.c; ctx.arc(b.x, b.y, b.r, 0, 6.283); ctx.fill();
+      }
+      ctx.fillStyle = '#8a94a0'; ctx.font = '13px sans-serif';
+      ctx.fillText('球數：' + balls.length + '（點擊畫面 +200）', 54, 28 + (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0));
+      demoRAF = requestAnimationFrame(draw);
+    }
+    draw();
+    menu.classList.add('hidden');
+  }
+
+  // ---------- UI ----------
+  $('load').onclick = () => { const u = urlIn.value.trim(); if (u) loadGame(u); };
+  urlIn.addEventListener('keydown', e => { if (e.key === 'Enter') $('load').click(); });
+  $('demo').onclick = startDemo;
+  $('close').onclick = () => menu.classList.add('hidden');
+  $('gear').onclick = () => menu.classList.toggle('hidden');
+  $('optGraph').onchange = e => { graph.style.display = e.target.checked ? 'block' : 'none'; };
+  $('optHud').onchange = e => { hud.style.display = e.target.checked ? 'block' : 'none'; };
+
+  try { const s = localStorage.getItem('fps:url'); if (s) urlIn.value = s; } catch (e) {}
+
+  // 防止雙擊縮放
+  let lt = 0;
+  document.addEventListener('touchend', e => {
+    const n = Date.now(); if (n - lt < 300 && e.target === document.body) e.preventDefault(); lt = n;
+  }, { passive: false });
+})();
+</script>
+</body>
+</html>
